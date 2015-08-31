@@ -1,0 +1,215 @@
+---
+title: "Определение тональности обзоров фильмов"
+author: "Морозов Глеб"
+date: "30 августа 2015 г."
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+```
+
+В данной работе рассматриваются различные возможности применения инструментов предоставляемых языком R для определения тональности обзоров фильмов.
+
+### Данные
+
+Данные для работы предоставлены в рамках соревнования [Bag of Words](https://www.kaggle.com/c/word2vec-nlp-tutorial) проходящего на сайте [Kaggle](https://www.kaggle.com) и представляют собой обучающую выборку из 25000 обзоров с сайта IMBD каждый из которых отнесё с одному из классов: негативный/позитивный. Задача предсказать к какому из классов будет относится каждый обзор из тестовой выборки.
+
+```{r}
+library(magrittr)
+library(tm)
+require(plyr)
+require(dplyr)
+library(ggplot2)
+library(randomForest)
+```
+
+
+Загрузим данные в оперативную память.
+
+```{r cache=T}
+data_train <- read.delim("labeledTrainData.tsv",header = TRUE, sep = "\t",
+                               quote = "", stringsAsFactors = F)
+```
+
+Полученная таблица состоит из трёх столбцов: `id`, `sentiment` и `review`. Именно последний столбец и является объектом нашей работы. Посмотрим, что же из себя представляет сам обзор. (т.к. обзор достаточно длинный я приведу только первые 700 знаков)
+
+```{r}
+paste(substr(data_train[1,3],1,700),"...")
+```
+
+Видно, что в тексте присутствует мусор в виде HTML тегов. 
+
+### Bag of Words
+
+Bag of Words или мешок слов - это модель часто используемая при обработке текстов, представляющая собой неупорядоченный набор слов, входящих в обрабатываемый текст. Часто модель представляют в виде матрицы, в которой строки соответствуют отдельному тексту, а столбцы - входящие в него слова. Ячейки на пересечении являются числом вхождения данного слова в соответствующий документ. Данная модель удобна тем, что переводит человеческий язык слов в понятный для компьтера язык цифр. 
+
+### Обработка данных.
+
+Для обработки данных я буду использовать возможности пакета `tm`. В следующем блоке кода производятся следующие действия:
+
+- создаётся вектор из текстов
+- создеётся корпус - коллекция текстов
+- все буквы приводятся к строчным
+- удаляются знаки пунктуации
+- удаляются так называемые "стоп-слова", т.к. часто встречающиеся слова в языке, не несущие сами по себе информации (в английском языке, например `and`) Кроме этого я решил сразу убрать слово, которое наверняка будет часто встречаться в обзорах, но интереса для модели не представляет - `movie`.
+- производится стеммирование, т.е. слова преобразуются в свою основную форму
+
+```{r cache=T}
+train_corpus <- data_train$review %>% VectorSource(.)%>%
+        Corpus(.) %>% tm_map(., tolower) %>% tm_map(., PlainTextDocument) %>%
+        tm_map(., removePunctuation) %>% 
+        tm_map(., removeWords, c("movie", stopwords("english"))) %>%
+        tm_map(., stemDocument)
+        
+```
+
+Теперь создадим частотную матрицу.
+
+```{r cache=T}
+frequencies <- DocumentTermMatrix(train_corpus)
+frequencies
+```
+
+Наша матрица содержит более 90000 терминов, т.е. модель на её основе будет содержать 90000 признаков! Её необходимо уменьшать и для этого используем тот факт, что в ней очень много редко встречающихся в обзорах слов, т.е. она разряжена (термин `sparse`). Я решил её сократить очень сильно (для того, чтобы модель уместилась в оперативной памяти с учётом 25000 объектов в обучающей выборке) и оставить только те слова, что встречаются минимум в 10% обзоров.
+
+```{r cache=T}
+sparse <- removeSparseTerms(frequencies, 0.9)
+sparse
+```
+
+В итоге в матрице осталось 146 терминов. Преобразуем матрицу в `data frame` и добавим столбец с целевым признаком.
+
+```{r cache=T}
+reviewSparse = as.data.frame(as.matrix(sparse))
+vocab <- names(reviewSparse)
+reviewSparse$sentiment <- data_train$sentiment %>% as.factor(.) %>% 
+        revalue(., c("0"="neg", "1" = "pos"))
+row.names(reviewSparse) <- NULL
+```
+
+Теперь обучим Random Forest модель на полученных данных. Я использую 100 деревьев в связи с ограничением оперативной памяти.
+
+```{r cache=T}
+model_rf <- randomForest(sentiment ~ ., data = reviewSparse, ntree = 100)
+```
+
+Используя обученную модель создадим прогноз для тестовых данных.
+
+```{r cache=T}
+data_test <- read.delim("testData.tsv", header = TRUE, sep = "\t",
+                               quote = "", stringsAsFactors = F)
+test_corpus <- data_test$review %>% VectorSource(.)%>%
+        Corpus(.) %>% tm_map(., tolower) %>% tm_map(., PlainTextDocument) %>%
+        tm_map(., removePunctuation) %>% 
+        tm_map(., removeWords, c("movie", stopwords("english"))) %>%
+        tm_map(., stemDocument)
+test_frequencies <-  DocumentTermMatrix(test_corpus,control=list(dictionary = vocab))
+reviewSparse_test <-  as.data.frame(as.matrix(test_frequencies))
+row.names(reviewSparse_test) <- NULL
+sentiment_test <- predict(model_rf, newdata = reviewSparse_test)
+pred_test <- as.data.frame(cbind(data_test$id, sentiment_test))
+colnames(pred_test) <- c("id", "sentiment")
+pred_test$sentiment %<>% revalue(., c("1"="0", "2" = "1"))
+write.csv(pred_test, file="Submission.csv", quote=FALSE, row.names=FALSE)
+
+```
+
+После загрузки и оценки на сайте Kaggle модель получила оценку по статистике AUC - 0.73184. Попробуем улучшить её. Один из вариантов улучшения модели - это использовать все слова, полученные в процессе создания частотной матрицы. Но, что же делать с огромной размерностью матрицы признаков? Воспользуемся методом главных компонент для уменьшения размерности данных.
+
+Оставим из нашей частотной матрицы только те слова, которые встречаются минимум в 5% обзоров.
+
+```{r cache=T}
+sparse <- removeSparseTerms(frequencies, 0.95)
+sparse
+```
+
+У нас осталось более почти 400 терминов. Преобразуем полученные данные по методу PCA и отберём достаточное количество компонент для дальнейшей работы.
+
+```{r cache=T}
+pc <- princomp(sparse, scores = T)
+variance <- pc$sdev^2/sum(pc$sdev^2)
+cumvar <- cumsum(variance)
+cumvar <- data.frame(PC = 1:length(cumvar), CumVar = cumvar)
+ggplot(data = cumvar, aes(x = PC, y = CumVar)) + geom_point()
+variance <- data.frame(PC = 1:length(variance), Var = variance*100)
+ggplot(data = variance[1:10,], aes(x = factor(PC), y = Var)) + geom_bar(stat = "identity")
+sum(variance$Var[1:200])
+
+```
+
+Но в данном случае метод главных компонент нам мало чем может помочь в снижении размерности данных, что очевидно из полученных графиков. 
+
+Попробуем подойти к проблеме с другой стороны. При составлении частотной матрицы и обрезании её мы оставляем наиболее часто встречающиеся слова, но, скорее всего, много слов, которые часто встречаются в обзорах фильмов, но не отражают настроение обзора. Например такие слова как `movie`, `film` и т.д. Но, т.к. у нас есть обучающая выборка с отмеченным настроением обзоров, можно выделить слова, частоты которых существенно различаются у негативных и положительных обзоров. 
+
+Для начала, создадим частотную матрицу для негативных обзоров.
+
+```{r cache=T}
+freq_neg <- data_train %>% filter(sentiment == 0) %>% select(review) %>% VectorSource(.)%>%
+        Corpus(.) %>% tm_map(., tolower) %>% tm_map(., PlainTextDocument) %>%
+        tm_map(., removePunctuation) %>%
+        tm_map(., removeNumbers) %>%
+        tm_map(., removeWords, c(stopwords("english"))) %>%
+        tm_map(., stemDocument) %>% DocumentTermMatrix(.) %>% 
+        removeSparseTerms(., 0.999) %>% as.matrix(.)
+freq_df_neg <- colSums(freq_neg)
+freq_df_neg <- data.frame(word = names(freq_df_neg), freq = freq_df_neg)
+rownames(freq_df_neg) <- NULL
+head(arrange(freq_df_neg, desc(freq)))
+```
+
+И для положительных обзоров.
+
+```{r cache=T}
+freq_pos <- data_train %>% filter(sentiment == 1) %>% select(review) %>% VectorSource(.)%>%
+        Corpus(.) %>% tm_map(., tolower) %>% tm_map(., PlainTextDocument) %>%
+        tm_map(., removePunctuation) %>%
+        tm_map(., removeNumbers) %>%
+        tm_map(., removeWords, c(stopwords("english"))) %>%
+        tm_map(., stemDocument) %>% DocumentTermMatrix(.) %>% 
+        removeSparseTerms(., 0.999) %>% as.matrix(.)
+freq_df_pos <- colSums(freq_pos)
+freq_df_pos <- data.frame(word = names(freq_df_pos), freq = freq_df_pos)
+rownames(freq_df_pos) <- NULL 
+head(arrange(freq_df_pos, desc(freq)))
+```
+
+Объединим полученные таблицы и посчитаем разницу между частотами.
+
+```{r cache=T}
+freq_all <- merge(freq_df_neg, freq_df_pos, by = "word", all = T)
+freq_all$freq.x[is.na(freq_all$freq.x)] <- 0
+freq_all$freq.y[is.na(freq_all$freq.y)] <- 0
+freq_all$diff <- abs(freq_all$freq.x - freq_all$freq.y)
+head(arrange(freq_all, desc(diff)))
+```
+
+Отлично! Мы видим, как и ожидалось, среди слов с наибольшей разницей такие термины как `bad`, `great` и `love`. Но также здесь и просто часто встречающиеся слова, как `movie`. Это произошло, что у частых слов даже небольшая процентная разница выдаёт высокую абсолютную разницу. Для того, чтобы устранить это упущение, нормализуем разницу, разделив её на сумму частот. Получившаяся метрика будет лежать в интервале между 0 и 1, и чем выше её значение - тем важнее данное значение в определении разницы между положительными и отрицательными отзывами. Но что же делать со словами, которые встречаются только у одного класса отзывов и при этом их частота мала? Для уменьшения их важности добавим к знаменателю коэффициент.
+
+```{r cache=T}
+freq_all$diff_norm <- abs(freq_all$freq.x - freq_all$freq.y)/
+        (freq_all$freq.x +freq_all$freq.y + 300)
+head(arrange(freq_all, desc(diff_norm)))
+```
+
+Отберём 500 слов с наивысшим показателем коэффициента разницы.
+
+```{r cache=T}
+freq_word <- arrange(freq_all, desc(diff_norm)) %>% select(word) %>% slice(1:500)
+```
+
+Используем полученный словарь для создания частотной матрицы, на которой обучим Random Forest модель.
+
+```{r cache=T}
+vocab <- as.character(freq_word$word)
+frequencies = DocumentTermMatrix(train_corpus,control=list(dictionary = vocab))
+model_rf <- randomForest(sentiment ~ ., data = reviewSparse, ntree = 100)
+
+```
+
+После загрузки и оценки на сайте Kaggle модель получила оценку по статистике AUC - 0.83120, т.е. поработав с признаками мы получили улучшение статистики на 10%!
+
+
+
