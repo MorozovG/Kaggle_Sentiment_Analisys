@@ -113,15 +113,15 @@ frequencies</code></pre>
 ## Sparsity           : 100%
 ## Maximal term length: 64
 ## Weighting          : term frequency (tf)</code></pre>
-<p>Наша матрица содержит более 90000 терминов, т.е. модель на её основе будет содержать 90000 признаков! Её необходимо уменьшать и для этого используем тот факт, что в ней очень много редко встречающихся в обзорах слов, т.е. она разряжена (термин <code>sparse</code>). Я решил её сократить очень сильно (для того, чтобы модель уместилась в оперативной памяти с учётом 25000 объектов в обучающей выборке) и оставить только те слова, что встречаются минимум в 10% обзоров.</p>
-<pre class="r"><code>sparse &lt;- removeSparseTerms(frequencies, 0.9)
+<p>Наша матрица содержит более 90000 терминов, т.е. модель на её основе будет содержать 90000 признаков! Её необходимо уменьшать и для этого используем тот факт, что в ней очень много редко встречающихся в обзорах слов, т.е. она разряжена (термин <code>sparse</code>). Я решил её сократить очень сильно (для того, чтобы модель уместилась в оперативной памяти с учётом 25000 объектов в обучающей выборке) и оставить только те слова, что встречаются минимум в 5% обзоров.</p>
+<pre class="r"><code>sparse &lt;- removeSparseTerms(frequencies, 0.95)
 sparse</code></pre>
-<pre><code>## &lt;&lt;DocumentTermMatrix (documents: 25000, terms: 146)&gt;&gt;
-## Non-/sparse entries: 655643/2994357
-## Sparsity           : 82%
-## Maximal term length: 8
+<pre><code>## &lt;&lt;DocumentTermMatrix (documents: 25000, terms: 373)&gt;&gt;
+## Non-/sparse entries: 1046871/8278129
+## Sparsity           : 89%
+## Maximal term length: 10
 ## Weighting          : term frequency (tf)</code></pre>
-<p>В итоге в матрице осталось 146 терминов. Преобразуем матрицу в <code>data frame</code> и добавим столбец с целевым признаком.</p>
+<p>В итоге в матрице осталось 373 термина. Преобразуем матрицу в <code>data frame</code> и добавим столбец с целевым признаком.</p>
 <pre class="r"><code>reviewSparse = as.data.frame(as.matrix(sparse))
 vocab &lt;- names(reviewSparse)
 reviewSparse$sentiment &lt;- data_train$sentiment %&gt;% as.factor(.) %&gt;% 
