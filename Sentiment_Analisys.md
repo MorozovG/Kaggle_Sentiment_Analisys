@@ -137,53 +137,7 @@ pred_test$sentiment %<>% revalue(., c("1"="0", "2" = "1"))
 write.csv(pred_test, file="Submission.csv", quote=FALSE, row.names=FALSE)
 ```
 
-После загрузки и оценки на сайте Kaggle модель получила оценку по статистике AUC - 0.73184. Попробуем улучшить её. Один из вариантов улучшения модели - это использовать все слова, полученные в процессе создания частотной матрицы. Но, что же делать с огромной размерностью матрицы признаков? Воспользуемся методом главных компонент для уменьшения размерности данных.
-
-Оставим из нашей частотной матрицы только те слова, которые встречаются минимум в 5% обзоров.
-
-
-```r
-sparse <- removeSparseTerms(frequencies, 0.95)
-sparse
-```
-
-```
-## <<DocumentTermMatrix (documents: 25000, terms: 373)>>
-## Non-/sparse entries: 1046871/8278129
-## Sparsity           : 89%
-## Maximal term length: 10
-## Weighting          : term frequency (tf)
-```
-
-У нас осталось более почти 400 терминов. Преобразуем полученные данные по методу PCA и отберём достаточное количество компонент для дальнейшей работы.
-
-
-```r
-pc <- princomp(sparse, scores = T)
-variance <- pc$sdev^2/sum(pc$sdev^2)
-cumvar <- cumsum(variance)
-cumvar <- data.frame(PC = 1:length(cumvar), CumVar = cumvar)
-ggplot(data = cumvar, aes(x = PC, y = CumVar)) + geom_point()
-```
-
-![](Sentiment_Analisys_files/figure-html/unnamed-chunk-11-1.png) 
-
-```r
-variance <- data.frame(PC = 1:length(variance), Var = variance*100)
-ggplot(data = variance[1:10,], aes(x = factor(PC), y = Var)) + geom_bar(stat = "identity")
-```
-
-![](Sentiment_Analisys_files/figure-html/unnamed-chunk-11-2.png) 
-
-```r
-sum(variance$Var[1:200])
-```
-
-```
-## [1] 82.66297
-```
-
-Но в данном случае метод главных компонент нам мало чем может помочь в снижении размерности данных, что очевидно из полученных графиков. 
+После загрузки и оценки на сайте Kaggle модель получила оценку по статистике AUC - 0.73184. 
 
 Попробуем подойти к проблеме с другой стороны. При составлении частотной матрицы и обрезании её мы оставляем наиболее часто встречающиеся слова, но, скорее всего, много слов, которые часто встречаются в обзорах фильмов, но не отражают настроение обзора. Например такие слова как `movie`, `film` и т.д. Но, т.к. у нас есть обучающая выборка с отмеченным настроением обзоров, можно выделить слова, частоты которых существенно различаются у негативных и положительных обзоров. 
 
@@ -294,10 +248,65 @@ freq_word <- arrange(freq_all, desc(diff_norm)) %>% select(word) %>% slice(1:500
 ```r
 vocab <- as.character(freq_word$word)
 frequencies = DocumentTermMatrix(train_corpus,control=list(dictionary = vocab))
-model_rf <- randomForest(sentiment ~ ., data = reviewSparse, ntree = 100)
+reviewSparse_train <-  as.data.frame(as.matrix(frequencies))
+row.names(reviewSparse_train) <- NULL
+reviewSparse_train$sentiment <- data_train$sentiment %>% as.factor(.) %>%
+revalue(., c("0"="neg", "1" = "pos"))
+
+model_rf <- randomForest(sentiment ~ ., data = reviewSparse_train, ntree = 100)
 ```
 
 После загрузки и оценки на сайте Kaggle модель получила оценку по статистике AUC - 0.83120, т.е. поработав с признаками мы получили улучшение статистики на 10%!
+
+### TF-IDF
+
+При создании матрицы документ-термин в качестве метрики важности слова мы использовали просто частоту появления слова в обзоре. В пакете `tm` есть возможность использовать другую меру, называемую tf-idf. TF-IDF (от англ. TF — term frequency, IDF — inverse document frequency) — статистическая метрика, используемая для оценки важности слова в контексте документа, являющегося частью коллекции документов или корпуса. Вес некоторого слова пропорционален количеству употребления этого слова в документе, и обратно пропорционален частоте употребления слова в других документах коллекции. 
+
+Используя tf-idf, создадим словарь из 500 терминов с наиболее высоким показателем данной метрики. Для того, чтобы этот словарь наиболее релевантно отражал важность слов, будем использовать дополнительную обучающую выборку, в которой не размечено настроение обзоров. На базе полученного словаря создадим матрицу документ-термин и обучим модель.
+
+
+```r
+data_train_un <- read.delim("unlabeledTrainData.tsv",header = TRUE, sep = "\t",
+                            quote = "", stringsAsFactors = F)
+train_review <- c(data_train$review, data_train_un$review)
+train_corpus <- train_review %>% VectorSource(.)%>%
+        Corpus(.) %>% tm_map(., tolower) %>% tm_map(., PlainTextDocument) %>%
+        tm_map(., removePunctuation) %>% tm_map(., removeNumbers) %>%
+        tm_map(., removeWords, c(stopwords("english"))) %>%
+        tm_map(., stemDocument)
+tdm <- TermDocumentMatrix(train_corpus,
+                          control = list(weighting = function(x) weightTfIdf(x, normalize = F)))
+library(slam)
+freq <- rollup(tdm, 2,FUN = sum)
+freq <- as.matrix(freq)
+freq_df <- data.frame(word = row.names(freq), tfidf = freq)
+names(freq_df) <- c("word", "tf_idf")
+row.names(freq_df) <- NULL
+freq_df %<>% arrange(desc(tf_idf))
+vocab <- as.character(freq_df$word)[1:500]
+train_corpus <- data_train$review %>% VectorSource(.)%>%
+        Corpus(.) %>% tm_map(., tolower) %>% tm_map(., PlainTextDocument) %>%
+        tm_map(., removePunctuation) %>% tm_map(., removeNumbers) %>%
+        tm_map(., removeWords, c(stopwords("english"))) %>%
+        tm_map(., stemDocument)
+frequencies = DocumentTermMatrix(train_corpus,control=list(dictionary = vocab,
+                                                           weighting = function(x) weightTfIdf(x, normalize = F) ))
+reviewSparse_train <-  as.data.frame(as.matrix(frequencies))
+rm(data_train_un, tdm, dtm, train_review)
+reviewSparse_train <-  as.data.frame(as.matrix(frequencies))
+row.names(reviewSparse_train) <- NULL
+colnames(reviewSparse_train) = make.names(colnames(reviewSparse_train))
+reviewSparse_train$sentiment <- data_train$sentiment %>% as.factor(.) %>%
+revalue(., c("0"="neg", "1" = "pos"))
+rm(data_train, train_corpus, freq, freq_df)
+model_rf <- randomForest(sentiment ~ ., data = reviewSparse_train, ntree = 100)
+```
+
+Используем данную модель на тестовой выборке и получим значение AUC - 0.81584.
+
+### Заключение.
+
+Данная работа представляет собой один из возможных вариантов создания предсказательной модели на основе текстовых данных. Одним из вариантов улучшить качество модели может быть увеличение количества используемых терминов из матрицы документ-термин, но этот путь требует существенного увеличения используемых машинных ресурсов. Также может привести к гораздо лучшим результатам обратиться не к частотам слов, а к их значениям и связям между ними. Для этого надо обратиться к модели `word2vec`. Кроме этого, большое поле для исследования представляет собой рассмотрение терминов в контексте документа.
 
 
 
